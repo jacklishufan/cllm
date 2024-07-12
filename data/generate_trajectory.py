@@ -275,6 +275,8 @@ def main(filename, model, tokenizer, max_new_tokens, max_new_seq_len, use_aug, u
     new_data = []
 
     for i in tqdm(range(prompt_size)):
+        # if i > 2:
+        #     break
         d = train_dataset[i]
         inputs = torch.Tensor(d['sources_input_ids']).unsqueeze(0).to(device=model.device, dtype=torch.int)
 
@@ -310,7 +312,8 @@ def main(filename, model, tokenizer, max_new_tokens, max_new_seq_len, use_aug, u
 
             if use_labels:
                 dic['labels_ids'] = d['labels_ids']
-
+                if isinstance(dic['labels_ids'],torch.Tensor):
+                    dic['labels_ids']=dic['labels_ids'].tolist()
             inputs = jacobian_trajectory_ids[-1]
 
             dic['teacher_output_ids'] = jacobian_trajectory_ids[-1].tolist()
@@ -323,9 +326,9 @@ def main(filename, model, tokenizer, max_new_tokens, max_new_seq_len, use_aug, u
     print('Jacobi trajectory has been collected. Now delete low-quality generation as post processing.')
     save_path = 'data/collected_jacobi_trajectory/'    
     cleaned_data = jacobian_generated_data_postprocessed(new_data, model_path)
+    filename = os.path.basename(filename)
     new_file_name = "cleaned_" + f"{filename.lower()}_jacobi_max_new_tokens{max_new_tokens}_aug{use_aug}_labels_{use_labels}_max_seq_len_{max_new_seq_len}.json"
     new_file_path = os.path.join(save_path, new_file_name)
-    
     # create directory for a path if it doesn't exist
     if not os.path.exists(save_path):
         os.makedirs(save_path)
