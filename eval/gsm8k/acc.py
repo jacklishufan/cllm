@@ -10,16 +10,33 @@ import sys
 import pdb
 import random
 from math_normalization import *
-
+class AvgMeter:
+    def __init__(self) -> None:
+        self.count = 0
+        self.sum = 0
+        self.flag = 0
+        self.tokens = 0
+        
+    def add(self,x):
+        self.sum+=x
+        self.count+=1
+    def get_value(self):
+        return self.sum/ ( self.count+1e-9)
+import time
 def consistency_generate(
     model,
     tokenizer,
     inputs,
     max_new_tokens,
-    max_new_seq_len
+    max_new_seq_len,
+    avg_meter_iter,
+    avg_meter_time,
+    max_limit
     ):
     itr = 0
     while True:
+        # print(itr)
+        t0 = time.time()
         if itr == 0:
             input_ids = inputs['input_ids']
             input_masks = inputs['attention_mask']
@@ -30,7 +47,11 @@ def consistency_generate(
 
         bsz = input_ids.shape[0]
         eos_reached = torch.tensor([False] * bsz, device="cuda")
-        generation = get_jacobian_trajectory(model, tokenizer, input_ids, input_masks, max_new_tokens)
+        t1 = time.time()
+        generation = get_jacobian_trajectory(model, tokenizer, input_ids, input_masks, max_new_tokens,avg_meter_iter,avg_meter_time,max_limit)
+        t2 = time.time()
+        
+        
         ### tokens generated after <eos> are set to <pad>
         for j in range(bsz):
             prompt_len = torch.sum(input_masks, dim=-1)
@@ -45,8 +66,13 @@ def consistency_generate(
 
         ### see if next max_new_tokens should be generated & if True, update weights and prepare new input_ids
         itr+=1      
+
         if all(eos_reached) or itr*max_new_tokens >= max_new_seq_len:
             return generation[0, :total_token_len]
+        t3 = time.time()
+        dt = t3 - t0 - (t2 - t1)
+        for vv in avg_meter_time:
+            vv.sum += dt
         input_ids = generation
 
 @torch.inference_mode()
@@ -55,7 +81,10 @@ def get_jacobian_trajectory(
     tokenizer,
     input_ids,
     attention_mask,
-    max_new_tokens
+    max_new_tokens,
+    avg_meter_iter,
+    avg_meter_time,
+    max_limit=9999
 ):
 
     bsz = input_ids.shape[0] 
@@ -71,8 +100,10 @@ def get_jacobian_trajectory(
     itr = 0
     next_generation = tokens
     generate_attention_mask = torch.full_like(next_generation, 1).to(tokens.device)
+    t0 = time.time()
     while True:
-
+        t1 = time.time()
+        
         current_generation = next_generation
         with torch.no_grad():
             logits = model(current_generation, generate_attention_mask).logits
@@ -81,8 +112,13 @@ def get_jacobian_trajectory(
         # hold prompt unchanged and update generated tokens
         for i in range(bsz):
             next_generation[i, :] = torch.cat((tokens[i, :prompt_len[i]], next_generation[i, prompt_len[i]-1:total_len-1]), dim=0)
-        if torch.all(torch.eq(next_generation, current_generation)).item():
-            print(f"Iteration steps: {itr}")
+        avg_meter_time[itr].add(t1-t0)
+        avg_meter_time[itr].flag = 1
+        if (torch.all(torch.eq(next_generation, current_generation)).item() and max_limit == 9999) or max_limit-1==itr:
+            # print(f"Iteration steps: {itr}")
+            avg_meter_iter.add(itr)
+            #print(f"AVG Iteration steps: {avg_meter_iter.get_value()}")
+            
             return next_generation # right generation is saved twice so we delete the last element of trajectory list
         itr+=1
 
@@ -154,7 +190,7 @@ def get_results(pred_file, dev_set):
     if dev_set in ['all', 'gsm8k', 'math', 'mathgpt', 'gsm8k_robust']:
         golds_str = []
         properties = []
-        with open(f'test.jsonl', 'r', encoding='utf-8') as f:
+        with open(f'eval/gsm8k/test.jsonl', 'r', encoding='utf-8') as f:
             for line in f:
                 if dev_set != "all":
                     if json.loads(line)['source'].lower() == dev_set:
@@ -188,7 +224,7 @@ def get_raw_inputs(dev_set):
     # in this function, we will get the raw queries for a target dev set
     data = []
     if dev_set in ['all', 'gsm8k', 'math', 'mathgpt', 'gsm8k_robust']:
-        with open(f'test.jsonl') as f:
+        with open(f'eval/gsm8k/test.jsonl') as f:
             for line in jsonlines.Reader(f):
                 data.append(line)
         if dev_set != 'all':
@@ -208,6 +244,7 @@ if __name__ == '__main__':
     # set args
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', type=str, required=True)
+    parser.add_argument('--lora', type=str, default='')
     parser.add_argument('--max_tokens', type=int, default=2048)
     parser.add_argument('--temperature', type=float, default=0.0)
     parser.add_argument('--top_p', type=float, default=1.0)
@@ -219,6 +256,8 @@ if __name__ == '__main__':
     parser.add_argument('--prompt_type', type=str, default='math-single')
     parser.add_argument('--sample_num', type=int, default=-1, )
     parser.add_argument('--eval_only', action="store_true")
+    parser.add_argument('--max_limit', default=9999,type=int)
+    
     parser.add_argument('--max_num_batched_tokens', type=int, default=2048)
     parser.add_argument(
         "--use_consistency_decoding",
@@ -233,6 +272,9 @@ if __name__ == '__main__':
     ) 
     args = parser.parse_args()
     max_new_token = args.max_tokens
+    avg_meter_iter = AvgMeter()
+    avg_meter_time = list([AvgMeter() for _ in range(args.max_new_tokens_for_consistency*2)])
+    avg_meter_speed = AvgMeter()
     if args.eval_only == False:
         # part 1 we set the model and tokenizer
         model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -241,8 +283,10 @@ if __name__ == '__main__':
             low_cpu_mem_usage=True,
             device_map='cuda',
         )
+        if args.lora:
+            model.load_adapter(args.lora)
         tokenizer = transformers.AutoTokenizer.from_pretrained(
-            args.model_dir,
+            args.lora or args.model_dir,
             padding_side="right",
             use_fast=False,
         )
@@ -259,13 +303,20 @@ if __name__ == '__main__':
         for processed_prompt in tqdm(processed_prompts):
 
             input_ids = tokenizer([processed_prompt]).input_ids
+            t0 = time.time()
             if args.use_consistency_decoding:
+                for v in avg_meter_time:
+                    v.flag = 0
+                
                 output_ids = consistency_generate(
                     model,
                     tokenizer,
                     tokenizer([processed_prompt], return_tensors="pt").to(model.device),
                     max_new_tokens=args.max_new_tokens_for_consistency,
                     max_new_seq_len=max_new_token,
+                    avg_meter_iter=avg_meter_iter,
+                    avg_meter_time=avg_meter_time,
+                    max_limit=args.max_limit
                 )
                 output_ids = output_ids.unsqueeze(dim=0)
             else:
@@ -275,11 +326,16 @@ if __name__ == '__main__':
                     # temperature=args.temperature,
                     max_new_tokens=max_new_token,
                 )
+            t1 = time.time()
             if model.config.is_encoder_decoder:
                 output_ids = output_ids[0]
             else:
                 output_ids = output_ids[0][len(input_ids[0]) :]
-
+            for v in avg_meter_time:
+                if v.flag:
+                    v.tokens += len(output_ids)
+            avg_meter_speed.sum += len(output_ids)
+            avg_meter_speed.count += t1 - t0
             output = tokenizer.decode(
                 output_ids,
                 spaces_between_special_tokens=False,
@@ -292,6 +348,9 @@ if __name__ == '__main__':
                     output = output.replace(special_token, "")
             output = output.strip()
             outputs.append({'prompt': processed_prompt, 'answer': output})
+            print(f"AVG SPEED: {avg_meter_speed.get_value()} tk /s")
+            # for i,v in enumerate(avg_meter_time):
+            #     print(f"AVG Spped FOR {i} STEPS: {v.tokens / v.sum + 1e-9}") if v.sum  > 0 else None
         print('>>>>>> generation done')
 
         # part 5 we save the results, always be {'id':id,'response':response}

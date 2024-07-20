@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 bash scripts/generate_trajectory.sh data/raw_data/gsm8k_train.jsonl /home/jacklishufan/Consistency_LLM/ckpt/Abel-7B-001 16 512

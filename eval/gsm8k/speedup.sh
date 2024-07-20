@@ -6,4 +6,4 @@ max_new_tokens=$3
 python3 eval/gsm8k/speedup.py \
     --test_model_path ${model_path} \
     --teacher_model_path ${target_model_path} \
-    --max_new_tokens ${max_new_tokens}
+    --max_new_tokens ${max_new_tokens} ${@:4}

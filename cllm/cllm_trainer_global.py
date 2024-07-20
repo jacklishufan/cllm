@@ -51,19 +51,27 @@ class CllmTrainer(Trainer):
         else:
             labels = inputs['complete_teacher_output_ids']
         # TODO: check if it's right when batch size > 1
-        labels = torch.tensor(labels).to(model.device)
+        if isinstance(labels,torch.Tensor):
+            labels = labels.to(model.device)
+        else:
+            labels = torch.tensor(labels).to(model.device)
         attention_mask = torch.full_like(labels, 1).to(model.device)
-        label_student_model_output = model(labels, attention_mask)
+
+        labels_in = labels.clone()
+        labels_in[labels==-100]=self.tokenizer.pad_token_id
+        label_student_model_output = model(labels_in, attention_mask)
 
         attention_mask = torch.full_like(jacobian_trajectory[0], 1).to(model.device)
         attention_mask = jacobian_trajectory[-1] != self.tokenizer.pad_token_id
+
         logits_last =  self.get_logits(model, jacobian_trajectory[-1].clone().detach(), attention_mask)
 
         label_smoother = LabelSmoother(epsilon=0.1, ignore_index= -100)
         loss_ar = label_smoother(label_student_model_output, labels, shift_labels=True)
         loss_ar*=10
         if self.args.qlora:
-            loss_ar.requires_grad = True
+            assert loss_ar.requires_grad
+            #loss_ar.requires_grad = True
         print(f'loss ar: {loss_ar} computed! performing backward pass...')
         with self.accelerator.accumulate(model):
             self.accelerator.backward(loss_ar)
@@ -74,6 +82,7 @@ class CllmTrainer(Trainer):
 
         attention_mask = torch.full_like(jacobian_trajectory[0], 1).to(jacobian_trajectory[0].device)
         attention_mask = jacobian_trajectory[i] != self.tokenizer.pad_token_id
+
         logits_i = self.get_logits(model, jacobian_trajectory[i].clone().detach(), attention_mask)
 
         output_mask = jacobian_trajectory[i][..., 1:] == self.tokenizer.pad_token_id
@@ -91,7 +100,8 @@ class CllmTrainer(Trainer):
                     output_mask.to(logits_i.device)
         )
         if self.args.qlora:
-            loss_global.requires_grad = True
+            assert loss_global.requires_grad
+            #loss_global.requires_grad = True
         print(f'loss global {loss_global} computed! performing backward pass...')
         with self.accelerator.accumulate(model):
             self.accelerator.backward(loss_global)
@@ -124,6 +134,7 @@ class CllmTrainer(Trainer):
             "shuffle": shuffle,
             "num_workers": self.args.dataloader_num_workers,
             "pin_memory": self.args.dataloader_pin_memory,
+            "collate_fn":self.data_collator
         }
 
         return self.accelerator.prepare(DataLoader(self.train_dataset, **dataloader_params))

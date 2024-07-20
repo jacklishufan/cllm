@@ -1,0 +1,4 @@
+OUTPUT_DIR=output/python
+MODEL_PATH=/home/jacklishufan/Consistency_LLM/ckpt/deepseekcoder_7b_codesearch_net_python
+DATA=data/collected_jacobi_trajectory/cleaned_code_search_net_jacobi_max_new_tokens32_augTrue_labels_True_max_seq_len_1024.json
+bash scripts/train_cllm.sh $MODEL_PATH $DATA  $OUTPUT_DIR 32

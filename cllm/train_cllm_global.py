@@ -15,11 +15,12 @@
 #    limitations under the License.
 
 from dataclasses import dataclass, field
+from typing import Mapping
 import json
 import math
 import pathlib
 from typing import Dict, Optional
-
+import numpy as np
 import os
 import sys
 import torch
@@ -47,7 +48,7 @@ class ModelArguments:
     target_model_path: Optional[str] = field(
         default="models/vicuna-7b-v1.5",  metadata={"help": "Path to target model"})
     qlora: Optional[bool] = field(default=False, metadata={"help": "Enable QLoRA processing"})
-
+    dev: Optional[str] = None
 @dataclass
 class DataArguments:
     data_path: str = field(
@@ -127,6 +128,7 @@ def preprocess_distill_data(
             attention_mask=jacobian_trajectory_ids[0].ne(tokenizer.pad_token_id),
             labels_ids=labels_ids,
             teacher_output_ids=teacher_output_ids,
+            pad_id = tokenizer.pad_token_id,
             complete_teacher_output_ids=complete_teacher_output_ids
         )
     else:
@@ -134,6 +136,7 @@ def preprocess_distill_data(
             jacobian_trajectory=jacobian_trajectory_ids,
             attention_mask=jacobian_trajectory_ids[0].ne(tokenizer.pad_token_id),
             teacher_output_ids=teacher_output_ids,
+            pad_id = tokenizer.pad_token_id,
             complete_teacher_output_ids=complete_teacher_output_ids
         )
     
@@ -181,6 +184,82 @@ class JacobianDataset(Dataset):
         return ret
 
 
+def pad_sequences(sequences, padding_value=0):
+    """
+    Pads a list of 1D tensors to the maximum length with a specified token.
+
+    Args:
+        sequences (list of torch.Tensor): List of 1D tensors to pad.
+        padding_value (int, optional): The value to use for padding. Defaults to 0.
+
+    Returns:
+        torch.Tensor: A tensor of padded sequences.
+    """
+    # Find the maximum length of the sequences
+    if type(sequences[0]) == list:
+        sequences = list([torch.tensor(x) for x in sequences])
+    max_length = max(seq.shape[-1] for seq in sequences)
+    # print(sequences[0].shape)
+    # Pad each sequence
+    padded_sequences = []
+    for seq in sequences:
+        padding_size = max_length - seq.shape[-1]
+        padded_seq = torch.cat([seq, torch.full((*seq.shape[:-1],padding_size,), padding_value)],dim=-1)
+        padded_sequences.append(padded_seq)
+    
+    # Stack all sequences into a single tensor
+    return torch.stack(padded_sequences)
+
+from torch.utils.data import default_collate
+def torch_default_data_collator(features):
+    import torch
+    if len(features) == 1:
+        return default_collate(features)
+    if not isinstance(features[0], Mapping):
+        features = [vars(f) for f in features]
+    first = features[0]
+    batch = {}
+    pad_keys =  ['complete_teacher_output_ids','teacher_output_ids','labels_ids']
+    for k in pad_keys:
+        if k in first:
+            batch[k] = pad_sequences([x[k] for x in features],-100)
+    jacobian_trajectory = list([f['jacobian_trajectory'] for f in features]) #list [List [ tensors]]
+    max_len = max([len(x) for x in jacobian_trajectory])
+    for x in jacobian_trajectory:
+        while len(x) < max_len:
+            i = np.random.choice(range(len(x))[:-1])
+            x.insert(0,x[i].clone())
+
+    jacobian_trajectory_new= []
+    for i in range(max_len):
+        jacobian_trajectory_new.append(
+            [x[i] for x in jacobian_trajectory]
+        )
+    jacobian_trajectory_new = list(pad_sequences(x,first['pad_id']) for x in jacobian_trajectory_new)
+    batch['jacobian_trajectory'] = jacobian_trajectory_new
+    batch['attention_mask'] = pad_sequences([f['attention_mask'] for f in features],False)
+    drop_keys = ["label", "label_ids"]+pad_keys
+    # Handling of all other possible keys.
+    # Again, we will use the first element to figure out which key/values are not None for this model.
+    for k, v in first.items():
+        if k in batch:
+            continue
+        if k not in drop_keys and v is not None and not isinstance(v, str):
+            if isinstance(v, torch.Tensor):
+                try:
+                    batch[k] = torch.stack([f[k] for f in features])
+                except:
+                    breakpoint()
+            elif isinstance(v, np.ndarray):
+                batch[k] = torch.tensor(np.stack([f[k] for f in features]))
+            else:
+                try:
+                    batch[k] = default_collate([f[k] for f in features])
+                except:
+                    print(k)
+                    raise AssertionError(f'{k}')
+    return batch
+
 def make_jacobian_data_module(
     tokenizer: transformers.PreTrainedTokenizer,
     trajectory_path,
@@ -205,7 +284,7 @@ def make_jacobian_data_module(
                                 local_rank=local_rank)
     eval_dataset = None
 
-    return dict(train_dataset=train_dataset, eval_dataset=eval_dataset)
+    return dict(train_dataset=train_dataset, eval_dataset=eval_dataset,data_collator=torch_default_data_collator)
 
 
 def train():
@@ -256,32 +335,41 @@ def train():
         config.rope_scaling = {"type": "linear", "factor": scaling_factor}
     config.use_cache = False
     
-    # Load model and tokenizer
-    model = transformers.AutoModelForCausalLM.from_pretrained(
-        model_args.target_model_path,
-        config=config,
-        cache_dir=training_args.cache_dir,
-    )
+    if model_args.dev == 'test3':
+        config.num_hidden_layers=2
+        model = transformers.AutoModelForCausalLM.from_config(
+        config,
+
+        )
+    else:
+        # Load model and tokenizer
+        model = transformers.AutoModelForCausalLM.from_pretrained(
+            model_args.target_model_path,
+            config=config,
+            cache_dir=training_args.cache_dir,
+        )
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.target_model_path,
         padding_side="right",
-        use_fast=False,
+        #use_fast=False,
     )
     if 'vicuna' in model_args.target_model_path:
         tokenizer.pad_token = tokenizer.unk_token
 
     if model_args.qlora:
         # Runs w/ qLoRA when qlora tag is enabled is enabled
-        model = prepare_model_for_kbit_training(model)
+        # model = prepare_model_for_kbit_training(model)
         config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
-            r=32,
-            lora_alpha=16,
+            r=256,
+            target_modules='all-linear',
+            modules_to_save=["lm_head", "embed_tokens"],
+            lora_alpha=512,
             lora_dropout=0.05,
         )
-    
         model = get_peft_model(model, config)
+        model.print_trainable_parameters()
         model.config.use_cache = False
 
     # Load data
@@ -296,7 +384,7 @@ def train():
     )
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        trainer.train(resume_from_checkpoint=False)
+        trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
     model.config.use_cache = True

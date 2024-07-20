@@ -121,40 +121,44 @@ def speed_compare(args):
     per_request_meta_trajectory_records = []
     data_lst = range(args.data_size)
     # only support batch size ==1 now
-    for i in tqdm(data_lst): 
-        d = data[i]
-        prompt_mapping = "Question:\n{input}\nAnswer:\nLet's think step by step.\n"
-        processed_prompt = prompt_mapping.format(input=d['question'])
-        max_new_tokens = args.max_new_tokens
-        inputs = tokenizer([processed_prompt], return_tensors="pt").to(model.device)
-        ar_begin = time.time()
-        ar_generated = model.generate(**inputs, use_cache=True, max_new_tokens=1024, do_sample=False)[0][inputs['input_ids'].shape[-1]:-1]
-        ar_end = time.time()
-        print(f'ar generated length: {len(ar_generated)}')
-        eos_reached, jacobian_time_speed_lst, jacobian_itr_step_lst, decoded_ids, decoded_result, all_jacobian_trajectory = jacobian_speed_evaluate(processed_prompt, model, tokenizer, max_new_tokens, args.max_new_seq_len)
-        
-        if not detect_repetitive_patterns(tokenizer, decoded_ids, repeat_ngram_size=10):
-            per_request_meta_trajectory_records.append(all_jacobian_trajectory)
-
-            jacobian_time_speed.append(*jacobian_time_speed_lst)
-            converge_step.append(*jacobian_itr_step_lst)
-
+    max_new_tokens = args.max_new_tokens
+    if not args.acc_only:
+        for i in tqdm(data_lst): 
+            d = data[i]
+            prompt_mapping = "Question:\n{input}\nAnswer:\nLet's think step by step.\n"
+            processed_prompt = prompt_mapping.format(input=d['question'])
+            max_new_tokens = args.max_new_tokens
             inputs = tokenizer([processed_prompt], return_tensors="pt").to(model.device)
-
-            gen_cfg = GenerationConfig.from_model_config(model.config)
-
-            ar_begin = torch.cuda.Event(enable_timing=True)
-            ar_end = torch.cuda.Event(enable_timing=True)
-            ar_begin.record()
-            ar_generated = model.generate(**inputs, use_cache=True, max_new_tokens=512)[0][inputs.input_ids.shape[-1]:-1]
-            ar_end.record()
-            torch.cuda.synchronize()
-            
-            #print(ar_generated)
+            ar_begin = time.time()
+            ar_generated = model.generate(**inputs, use_cache=True, max_new_tokens=1024, do_sample=False)[0][inputs['input_ids'].shape[-1]:-1]
+            ar_end = time.time()
             print(f'ar generated length: {len(ar_generated)}')
-            ar_time = ar_begin.elapsed_time(ar_end) / 1000
-            print(f'ar time: {len(ar_generated)/(ar_time)}')
-            ar_time_speed.append(len(ar_generated)/ar_time)
+            eos_reached, jacobian_time_speed_lst, jacobian_itr_step_lst, decoded_ids, decoded_result, all_jacobian_trajectory = jacobian_speed_evaluate(processed_prompt, model, tokenizer, max_new_tokens, args.max_new_seq_len)
+
+            if not detect_repetitive_patterns(tokenizer, decoded_ids, repeat_ngram_size=10):
+                per_request_meta_trajectory_records.append(all_jacobian_trajectory)
+
+                jacobian_time_speed.append(*jacobian_time_speed_lst)
+                converge_step.append(*jacobian_itr_step_lst)
+
+                inputs = tokenizer([processed_prompt], return_tensors="pt").to(model.device)
+
+                gen_cfg = GenerationConfig.from_model_config(model.config)
+
+                ar_begin = torch.cuda.Event(enable_timing=True)
+                ar_end = torch.cuda.Event(enable_timing=True)
+                ar_begin.record()
+                ar_generated = model.generate(**inputs, use_cache=True, max_new_tokens=512)[0][inputs.input_ids.shape[-1]:-1]
+                ar_end.record()
+                torch.cuda.synchronize()
+                
+                #print(ar_generated)
+                print(f'ar generated length: {len(ar_generated)}')
+                ar_time = ar_begin.elapsed_time(ar_end) / 1000
+                print(f'ar time: {len(ar_generated)/(ar_time)}')
+                ar_time_speed.append(len(ar_generated)/ar_time)
+    else:
+        ar_time_speed.append(1.0)
     
     # all trajectory analsis for speedup interpretability
     fast_forward_and_fix_points_statistics = {}
@@ -315,13 +319,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--filename", type=str,
                         default="eval/gsm8k/test.jsonl")
+    parser.add_argument("--acc_only", action='store_true')
     parser.add_argument("--max_new_tokens", type=int, default=16)
     parser.add_argument("--max_new_seq_len", type=int, default=1024)
     parser.add_argument("--test_model_path", type=str,
                         default="models/vicuna-7b-sharegpt-gpt4-48k")
     parser.add_argument("--teacher_model_path", type=str,
                         default="cllm/consistency-llm-7b-sharegpt48k")
-    parser.add_argument("--data_size", type=str,
+    parser.add_argument("--data_size", type=int,
                         default=500)
     args = parser.parse_args() 
     speed_compare(args)

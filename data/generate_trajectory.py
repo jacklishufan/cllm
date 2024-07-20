@@ -107,13 +107,20 @@ def preprocess_sharegpt(data, tokenizer):
 
     return train_dataset
 
-def train_tokenize_function_spider(examples, tokenizer):
+def train_tokenize_function_spider(examples, tokenizer,is_test=False):
+
     db_ids = [id for id in examples['db_id']]
 
     prompts = []
     for db_name in db_ids:
         db_path = f"data/raw_data/spider/database/{db_name}/{db_name}.sqlite"
-        con = sqlite3.connect(db_path)
+        if is_test:
+            db_path = f"data/raw_data/spider/test_database/{db_name}/{db_name}.sqlite"
+        try:
+            con = sqlite3.connect(db_path)
+        except:
+            print(db_path)
+            raise ValueError()
         cursor = con.cursor()
         cursor.execute('SELECT name FROM sqlite_master WHERE type="table";')
         curr_table = cursor.fetchall()
@@ -143,8 +150,9 @@ def train_tokenize_function_spider(examples, tokenizer):
         for prompt, instruction in zip(prompts, examples['question'])
     ]
     targets = [f"{output}\n{EOT_TOKEN}" for output in examples['query']]
-
+    
     data_dict = preprocess(sources, targets, tokenizer)
+    data_dict['query_out'] = examples['query']
     return data_dict
 
 def preprocess_gsm8k(
