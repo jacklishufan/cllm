@@ -287,7 +287,7 @@ def main(accelerator,filename, model, tokenizer, max_new_tokens, max_new_seq_len
     for i in tqdm(indices):
         # if i > 2:
         #     break
-        d = train_dataset[i]
+        d = train_dataset[int(i)]
         inputs = torch.Tensor(d['sources_input_ids']).unsqueeze(0).to(device=model.device, dtype=torch.int)
 
         itr = 0
