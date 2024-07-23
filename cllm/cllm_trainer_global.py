@@ -69,7 +69,7 @@ class CllmTrainer(Trainer):
 
         label_smoother = LabelSmoother(epsilon=0.1, ignore_index= -100)
         loss_ar = label_smoother(label_student_model_output, labels, shift_labels=True)
-        loss_ar*=10
+        loss_ar*=self.args.ar_loss_weight
         if self.args.qlora:
             assert loss_ar.requires_grad
             #loss_ar.requires_grad = True
@@ -100,6 +100,7 @@ class CllmTrainer(Trainer):
                     logits_last[..., :-1, :].to(logits_i.device).clone().detach().float(),
                     output_mask.to(logits_i.device)
         )
+        loss_global *= self.args.consistency_loss_weight
         if self.args.qlora:
             assert loss_global.requires_grad
             #loss_global.requires_grad = True

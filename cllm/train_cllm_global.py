@@ -66,6 +66,9 @@ class DataArguments:
 class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
+    ar_loss_weight: float = 10.0
+    consistency_loss_weight: float = 1.0
+    resume: bool = False
     model_max_length: int = field(
         default=512,
         metadata={
@@ -403,7 +406,7 @@ def train():
         model=model, tokenizer=tokenizer, args=training_args, **data_module
     )
 
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+    if training_args.resume and list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
