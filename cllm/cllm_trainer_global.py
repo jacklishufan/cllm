@@ -5,7 +5,7 @@ from transformers.trainer_pt_utils import LabelSmoother
 import wandb
 import random
 from torch.utils.data import DataLoader
-
+from tqdm.cli import tqdm
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
 class CllmTrainer(Trainer):
@@ -18,6 +18,7 @@ class CllmTrainer(Trainer):
 
     def training_step(self, model, inputs):
         self.train_step_cnt += 1
+        self.model.train()
         return self.consistency_training_step(model, inputs)
 
     def consistency_training_step(self, model, inputs):
@@ -158,3 +159,45 @@ class CllmTrainer(Trainer):
             attention_mask=attention_mask,
         ).logits
 
+
+    def evaluate(
+        self,
+        eval_dataset=None,
+        ignore_keys=None,
+        metric_key_prefix="eval",
+    ):
+        eval_loader = self.get_eval_dataloader()
+        self.model.eval()
+        total_eval_loss = 0.0
+        total_eval_loss_batch = 0
+        _idx = 0
+        with torch.no_grad():
+            for batch in tqdm(eval_loader):
+                _idx +=1
+                if _idx > 100:
+                    break
+                labels_ids = batch['labels_ids']
+                input_ids = labels_ids.clone()
+                attention_mask = ~(input_ids == -100)
+                attention_mask = attention_mask.long()
+                for idx,prompt_len in enumerate(batch['sources_len'].tolist()):
+                    labels_ids[idx,:prompt_len] = -100
+                input_ids[input_ids == -100] = self.tokenizer.pad_token_id
+                logits = self.get_logits(self.model,input_ids,attention_mask)
+                label_smoother = LabelSmoother(epsilon=0.0, ignore_index= -100)
+                loss_ar = label_smoother(dict(logits=logits), labels_ids, shift_labels=True)
+                total_eval_loss += loss_ar.item()
+                total_eval_loss_batch += 1
+            total_eval_loss = torch.tensor(total_eval_loss).to(self.accelerator.device)
+            total_eval_loss_batch = torch.tensor(total_eval_loss_batch).to(self.accelerator.device)
+            total_eval_loss_all_rank = self.accelerator.reduce(total_eval_loss)
+            total_eval_loss_batch = self.accelerator.reduce(total_eval_loss_batch)
+            nll = total_eval_loss_all_rank / (total_eval_loss_batch+1e-9)
+            ppl = torch.exp(nll)
+            payload = dict(
+                nll=nll.item(),
+                ppl=ppl.item()
+            )
+            if wandb.run is not None:
+                wandb.log({metric_key_prefix+k:v for k,v in payload.items()})
+    torch.cuda.empty_cache()

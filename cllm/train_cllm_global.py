@@ -41,7 +41,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
-
+def load_json(fp):
+    with open(fp) as f:
+        data = f.read()
+    return json.loads(data)
 
 @dataclass
 class ModelArguments:
@@ -52,6 +55,9 @@ class ModelArguments:
 @dataclass
 class DataArguments:
     data_path: str = field(
+        default=None, metadata={"help": "Path to the training data."}
+    )
+    val_dataset: str = field(
         default=None, metadata={"help": "Path to the training data."}
     )
     lazy_preprocess: bool = False
@@ -219,25 +225,27 @@ def torch_default_data_collator(features):
         features = [vars(f) for f in features]
     first = features[0]
     batch = {}
-    pad_keys =  ['complete_teacher_output_ids','teacher_output_ids','labels_ids']
+    pad_keys =  ['complete_teacher_output_ids','teacher_output_ids','labels_ids','sources_input_ids']
     for k in pad_keys:
         if k in first:
             batch[k] = pad_sequences([x[k] for x in features],-100)
-    jacobian_trajectory = list([f['jacobian_trajectory'] for f in features]) #list [List [ tensors]]
-    max_len = max([len(x) for x in jacobian_trajectory])
-    for x in jacobian_trajectory:
-        while len(x) < max_len:
-            i = np.random.choice(range(len(x))[:-1])
-            x.insert(0,x[i].clone())
+    if 'jacobian_trajectory' in features[0]:
+        jacobian_trajectory = list([f['jacobian_trajectory'] for f in features]) #list [List [ tensors]]
+        max_len = max([len(x) for x in jacobian_trajectory])
+        for x in jacobian_trajectory:
+            while len(x) < max_len:
+                i = np.random.choice(range(len(x))[:-1])
+                x.insert(0,x[i].clone())
 
-    jacobian_trajectory_new= []
-    for i in range(max_len):
-        jacobian_trajectory_new.append(
-            [x[i] for x in jacobian_trajectory]
-        )
-    jacobian_trajectory_new = list(pad_sequences(x,first['pad_id']) for x in jacobian_trajectory_new)
-    batch['jacobian_trajectory'] = jacobian_trajectory_new
-    batch['attention_mask'] = pad_sequences([f['attention_mask'] for f in features],False)
+        jacobian_trajectory_new= []
+        for i in range(max_len):
+            jacobian_trajectory_new.append(
+                [x[i] for x in jacobian_trajectory]
+            )
+        jacobian_trajectory_new = list(pad_sequences(x,first['pad_id']) for x in jacobian_trajectory_new)
+        batch['jacobian_trajectory'] = jacobian_trajectory_new
+    if 'attention_mask' in features[0]:
+        batch['attention_mask'] = pad_sequences([f['attention_mask'] for f in features],False)
     drop_keys = ["label", "label_ids"]+pad_keys
     # Handling of all other possible keys.
     # Again, we will use the first element to figure out which key/values are not None for this model.
@@ -258,6 +266,7 @@ def torch_default_data_collator(features):
                 except:
                     print(k)
                     raise AssertionError(f'{k}')
+    # print(batch)
     return batch
 
 def make_jacobian_data_module(
@@ -286,7 +295,16 @@ def make_jacobian_data_module(
 
     return dict(train_dataset=train_dataset, eval_dataset=eval_dataset,data_collator=torch_default_data_collator)
 
-
+class EvalDataset(Dataset):
+    
+    def __init__(self,data_path):
+        self.data = load_json(data_path)
+        
+    def __getitem__(self, index):
+        return self.data[index]
+    
+    def __len__(self):
+        return len(self.data)
 def train():
     parser = transformers.HfArgumentParser(
         (ModelArguments, DataArguments, TrainingArguments)
@@ -378,7 +396,9 @@ def train():
                                               data_args=data_args,
                                               model=model_args.target_model_path,
                                               local_rank=training_args.local_rank)
-
+    if data_args.val_dataset is not None:
+        eval_dataset = EvalDataset(data_args.val_dataset)
+        data_module['eval_dataset'] = eval_dataset
     trainer = CllmTrainer(
         model=model, tokenizer=tokenizer, args=training_args, **data_module
     )
