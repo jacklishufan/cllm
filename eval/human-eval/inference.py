@@ -668,6 +668,7 @@ if __name__ == '__main__':
                 )
                 output_ids = output_ids#.unsqueeze(dim=0)
             else:
+                # breakpoint()
                 output_ids = model.generate(
                     input_ids.cuda(),
                     do_sample=False,
@@ -675,13 +676,22 @@ if __name__ == '__main__':
                     max_new_tokens=max_new_token,
                 )
                 decode_step.add(len(output_ids[0])-len(input_ids[0]))
+            torch.cuda.synchronize()
             t1 = time.time()
-            output_ids = output_ids[0]
+            # breakpoint()
+            if not args.use_consistency_decoding:
+                output_ids = output_ids[0][len(input_ids[0]) :]
+            else:
+                output_ids = output_ids[0]
             # if model.config.is_encoder_decoder:
             #     output_ids = output_ids[0]
             # else:
             #     output_ids = output_ids[0][len(input_ids[0]) :]
-            output_ids = output_ids[:torch.where(output_ids==tokenizer.eos_token_id)[0].min()]
+    
+            try:
+                output_ids = output_ids[:torch.where(output_ids==tokenizer.eos_token_id)[0].min()]
+            except:
+                pass
             generated_tokens = len(output_ids)
             # print(generated_tokens,max_new_token)
             #generated_tokens += max(max_new_token,generated_tokens)
