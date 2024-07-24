@@ -681,7 +681,10 @@ if __name__ == '__main__':
             #     output_ids = output_ids[0]
             # else:
             #     output_ids = output_ids[0][len(input_ids[0]) :]
-            output_ids = output_ids[:torch.where(output_ids==tokenizer.eos_token_id)[0].min()]
+            try:
+                output_ids = output_ids[:torch.where(output_ids==tokenizer.eos_token_id)[0].min()]
+            except:
+                pass
             generated_tokens = len(output_ids)
             # print(generated_tokens,max_new_token)
             #generated_tokens += max(max_new_token,generated_tokens)
