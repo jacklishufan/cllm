@@ -51,6 +51,11 @@ import torch.nn.functional as F
 from transformers import LlamaModel,LlamaForCausalLM
 import argparse
 
+def get_usable_length(cache):
+    if cache is None:
+        return 0
+    else:
+        return len(cache[0][0])
 @torch.inference_mode()
 def jacobi_forward_profiling(
     self,
@@ -75,7 +80,10 @@ def jacobi_forward_profiling(
         inputs_embeds = self.model.embed_tokens(input_ids)
         past_key_values_length = 0
         if use_cache:
+            # if past_key_values is None:
+            #     past_key_values_length =
             use_legacy_cache = not isinstance(past_key_values, Cache)
+            
             if use_legacy_cache:
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
             past_key_values_length = past_key_values.get_usable_length(seq_length) 
@@ -135,7 +143,7 @@ def jacobi_forward_profiling(
 
         predict_next_tokens = torch.argmax(torch.nn.functional.softmax(logits, dim=-1), dim=-1)
         first_correct_token = predict_next_tokens[:, -1]
-        return next_decoder_cache, first_correct_token
+        return next_decoder_cache.to_legacy_cache(), first_correct_token
     else: # generation phase, input as random_initilized point and output as fixed point
         jacobian_trajectory = []
         accurate_n_gram = torch.zeros_like(input_ids).to(input_ids.device)
@@ -144,9 +152,13 @@ def jacobi_forward_profiling(
         jacobian_trajectory.append(next_point)
 
         iter_counter = 0
+        base_cache = past_key_values
         while True:
 
             current_point = next_point
+            torch.cuda.synchronize()
+            t00 = time.time()
+            
             inputs_embeds = self.model.embed_tokens(current_point)
             attention_mask = None
             position_ids = None
@@ -183,12 +195,14 @@ def jacobi_forward_profiling(
                 )
             # embed positions
             hidden_states = inputs_embeds
-
+            torch.cuda.synchronize()
+            t0 = time.time()
             # decoder layers            
             for decoder_layer in self.model.layers:
+                breakpoint()
                 layer_outputs = decoder_layer(
                     hidden_states,
-                    attention_mask=attention_mask,
+                    attention_mask=None,
                     position_ids=position_ids,
                     past_key_value=past_key_values,
                     use_cache=use_cache,
@@ -197,29 +211,41 @@ def jacobi_forward_profiling(
                 hidden_states = layer_outputs[0]
 
             hidden_states = self.model.norm(hidden_states)
-
+            torch.cuda.synchronize()
+            t1 = time.time()
             if self.config.pretraining_tp > 1:
                 lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
                 logits = [F.linear(hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
                 logits = torch.cat(logits, dim=-1)
             else:
                 logits = self.lm_head(hidden_states)
-
+            
+            
+            # breakpoint()
             logits = logits.float()
             all_shift_one_token = torch.argmax(torch.nn.functional.softmax(logits, dim=-1) / 0.01, dim=-1)
-            next_point= torch.cat((current_point[0, 0].view(1,-1), all_shift_one_token[0, :seq_length-1].view(1,-1)), dim=-1)
-            jacobian_trajectory.append(next_point)
+            next_point= all_shift_one_token # torch.cat((current_point[0, 0].view(1,-1), all_shift_one_token[0, :seq_length-1].view(1,-1)), dim=-1)
+            #jacobian_trajectory.append(next_point)
+            torch.cuda.synchronize()
+            t2 = time.time()
             
-            if torch.all(torch.eq(current_point, next_point)).item():    
+            #if torch.all(torch.eq(current_point, next_point)).item():    
+            if iter_counter == 51:
                 #print('Successfully break!')
                 #print(next_point)
                 first_correct_token = torch.argmax(torch.nn.functional.softmax(logits, dim=-1), dim=-1)[:,-1]
                 break
-            delete_false_key_value(past_key_values,seq_length)
-
+            #breakpoint()
+            past_key_values = base_cache
+            #print(base_cache[0][0].shape)
+            #delete_false_key_value(past_key_values,seq_length)
+            torch.cuda.synchronize()
+            t3 = time.time()
+            #print(t3-t00)
+            print(t1-t0,t2-t1,t3-t2,t0-t00)
             iter_counter += 1
 
-        return jacobian_trajectory[:-1], next_point, first_correct_token, iter_counter
+        return jacobian_trajectory[:-1], next_point, first_correct_token, iter_counter,past_key_values.to_legacy_cache()
     
 def extract_docstring(function_code):
     """
@@ -295,14 +321,14 @@ def jacobi_generate(inputs, model, tokenizer, max_new_tokens, max_new_seq_len,de
         # randomly initialize the first point of jacobian trajectory
         random_point = torch.tensor(random.choices(generation[0], k=(max_new_tokens-1)), device="cuda").view(1,-1)
         input_ids = torch.cat((first_correct_token.view(1,-1), random_point),dim=-1)
-        jacobian_trajectory, n_gram_generation, first_correct_token, iter_steps = jacobi_forward_profiling(model,input_ids=input_ids, max_new_tokens=max_new_tokens, past_key_values=past_key_values, use_cache = True, prefill_phase = False)
+        jacobian_trajectory, n_gram_generation, first_correct_token, iter_steps,past_key_values = jacobi_forward_profiling(model,input_ids=input_ids, max_new_tokens=max_new_tokens, past_key_values=past_key_values, use_cache = True, prefill_phase = False)
         decode_step.add(iter_steps)
         forward_times += iter_steps
         #all_jacobian_trajectory.append(jacobian_trajectory)
-        eos_positions = torch.where(n_gram_generation[0]==tokenizer.eos_token_id)[0]
+        #eos_positions = torch.where(n_gram_generation[0]==tokenizer.eos_token_id)[0]
 
-        if len(eos_positions)>0:
-            eos_reached = True
+        # if len(eos_positions)>0:
+        #     eos_reached = True
         
         ### see if next max_new_tokens should be generated & if True, update weights and prepare new input_id 
         generation = torch.cat((generation, n_gram_generation), dim=-1)
@@ -310,6 +336,7 @@ def jacobi_generate(inputs, model, tokenizer, max_new_tokens, max_new_seq_len,de
             break
     
     # to support bsz > 1
+    # print(generation.shape)
     converge_step.append(forward_times / itr)
     return generation[0, prompt_len:][None]#, converge_step, all_jacobian_trajectory
 
@@ -624,9 +651,10 @@ if __name__ == '__main__':
         all_tokens_t = 0
         decode_step = AvgMeter()
         context_len = AvgMeter()
+        i = 0
         # part 3 we generate answers
         for task_id,processed_prompt in tqdm(raw_data.items()):
-            
+            i += 1
             question =processed_prompt['prompt']
 
             instruction = extract_docstring(question)
@@ -668,32 +696,24 @@ if __name__ == '__main__':
                 )
                 output_ids = output_ids#.unsqueeze(dim=0)
             else:
-                # breakpoint()
                 output_ids = model.generate(
                     input_ids.cuda(),
                     do_sample=False,
                     # temperature=args.temperature,
                     max_new_tokens=max_new_token,
-                    use_cache=True
                 )
                 decode_step.add(len(output_ids[0])-len(input_ids[0]))
-            torch.cuda.synchronize()
             t1 = time.time()
-            # breakpoint()
-            if not args.use_consistency_decoding:
-                # breakpoint()
-                output_ids = output_ids[0][len(input_ids[0]) :]
-            else:
-                output_ids = output_ids[0]
+            output_ids = output_ids[0]
             # if model.config.is_encoder_decoder:
             #     output_ids = output_ids[0]
             # else:
             #     output_ids = output_ids[0][len(input_ids[0]) :]
-    
             try:
                 output_ids = output_ids[:torch.where(output_ids==tokenizer.eos_token_id)[0].min()]
             except:
                 pass
+            
             generated_tokens = len(output_ids)
             # print(generated_tokens,max_new_token)
             #generated_tokens += max(max_new_token,generated_tokens)
@@ -704,6 +724,7 @@ if __name__ == '__main__':
             all_time += (t1 - t0)
             print(f"Throughput: {all_tokens/(all_time+1e-9)}  /{all_tokens_t/(all_time+1e-9)} tokens / s"
                   f"Token Utilization: {all_tokens/all_tokens_t}",
+                  f"Avg Tokens: {all_tokens /i }"
                   f"Avg Step: {decode_step.get_value()}",
                   f"Context Len: {context_len.get_value()}"
                   )

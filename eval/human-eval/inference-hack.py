@@ -36,6 +36,9 @@ from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask,
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
+import sys
+sys.path.append('/home/bootstrap/jacklishufan/Consistency_LLM/')
+from cllm.modeling import LLamaForMaskedDiffusion
 
 def delete_false_key_value(
         self,
@@ -153,19 +156,22 @@ def jacobi_forward_profiling(
 
         iter_counter = 0
         base_cache = past_key_values
+        timestep = torch.tensor([1]).long().cuda()
         while True:
             past_key_values = base_cache
             current_point = next_point
             torch.cuda.synchronize()
             t00 = time.time()
-            y = self.model(input_ids=current_point,past_key_values=past_key_values,use_cache=True)
-            output_ids = self.lm_head(y.last_hidden_state).argmax(-1)
+            y = self(input_ids=current_point,past_key_values=past_key_values,use_cache=True,block_size=max_new_tokens,timesteps=timestep)
+            # breakpoint()
+            timestep += 1
+            output_ids = y.logits.argmax(-1) # self.lm_head(y.last_hidden_state).argmax(-1)
             next_point= torch.cat((current_point[0, 0].view(1,-1), output_ids[0, :seq_length-1].view(1,-1)), dim=-1)
             torch.cuda.synchronize()
             t1 = time.time()
             torch.cuda.synchronize()
             t2 = time.time()
-            if torch.all(torch.eq(current_point, next_point)).item():    
+            if torch.all(torch.eq(current_point, next_point)).item() or iter_counter >max_new_tokens:    
             #if iter_counter == 50:
                 #print('Successfully break!')
                 #print(next_point)
@@ -544,6 +550,8 @@ if __name__ == '__main__':
     parser.add_argument('--sample_num', type=int, default=-1, )
     parser.add_argument('--eval_only', action="store_true")
     parser.add_argument('--max_num_batched_tokens', type=int, default=2048)
+    parser.add_argument('--use_temporal_embedding',action='store_true')
+    parser.add_argument('--causal',type=bool,default=True)
     parser.add_argument(
         "--use_consistency_decoding",
         action="store_true",
@@ -559,9 +567,14 @@ if __name__ == '__main__':
     max_new_token = args.max_tokens
     if args.eval_only == False:
         # part 1 we set the model and tokenizer
-        model = transformers.AutoModelForCausalLM.from_pretrained(
+        #model_cls = LLamaForMaskedDiffusion
+        config = transformers.AutoConfig.from_pretrained(args.model_dir)
+        config.causal = args.causal
+        config.use_temporal_embedding = args.use_temporal_embedding
+        model = LLamaForMaskedDiffusion.from_pretrained(
             args.model_dir,
             torch_dtype=torch.bfloat16,
+            config=config,
             low_cpu_mem_usage=True,
             device_map='cuda',
         )

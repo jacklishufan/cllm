@@ -277,7 +277,8 @@ def main(accelerator,filename, model, tokenizer, max_new_tokens, max_new_seq_len
     new_data = []
     indices = np.array(list(range(len(train_dataset))))
     indices = indices[:prompt_size]
-    np.random.seed(0)
+    seed = args.seed
+    np.random.seed(seed)
     np.random.shuffle(indices)
     print(f"rank {local_rank}: First Indices: {indices[:10]}")
     n_per_gpu = int(np.ceil(prompt_size / world_size))
@@ -311,11 +312,12 @@ def main(accelerator,filename, model, tokenizer, max_new_tokens, max_new_seq_len
             if use_aug:
                 for j in range(len(dic["answer_trajectory_ids"])-3, 1, -1):
                     correct_positions = torch.where(torch.tensor(dic["answer_trajectory_ids"][j])!= torch.tensor(dic["answer_trajectory_ids"][-1]))[0]
-                    if correct_positions.shape[0] > 1:
-                        corrected_size = random.sample(range(1, correct_positions.shape[0]), k=1)
-                    else:
-                        continue
-                    for correct_id in random.choices(correct_positions, k=corrected_size[0]):
+                    # if correct_positions.shape[0] > 1:
+                    #     corrected_size = random.sample(range(1, correct_positions.shape[0]), k=1)
+                    # else:
+                    #     continue
+                    #for correct_id in random.choices(correct_positions, k=corrected_size[0]):
+                    for correct_id in random.choices(correct_positions, k=8):
                         aug_trajectory = dic["answer_trajectory_ids"][j].copy()
                         aug_trajectory[correct_id] = dic["answer_trajectory_ids"][-1][correct_id]
                     dic["answer_trajectory_ids"].insert(0, aug_trajectory)
@@ -337,7 +339,7 @@ def main(accelerator,filename, model, tokenizer, max_new_tokens, max_new_seq_len
     save_path = 'data/collected_jacobi_trajectory/'    
     cleaned_data = jacobian_generated_data_postprocessed(new_data, model_path)
     filename = os.path.basename(filename).split('.')[0]
-    new_file_name = "cleaned_" + f"{filename.lower()}_jacobi_max_new_tokens{max_new_tokens}_aug{use_aug}_labels_{use_labels}_max_seq_len_{max_new_seq_len}_rank_{local_rank}.json"
+    new_file_name = "cleaned_v2_" + f"{filename.lower()}_jacobi_max_new_tokens{max_new_tokens}_aug{use_aug}_labels_{use_labels}_max_seq_len_{max_new_seq_len}_rank_{local_rank}_{seed}.json"
     new_file_path = os.path.join(save_path, new_file_name)
     # create directory for a path if it doesn't exist
     if not os.path.exists(save_path):
@@ -357,7 +359,10 @@ if __name__ == "__main__":
     parser.add_argument("--data_size", default=5000,type=int)
     parser.add_argument("--use_aug", default=True)
     parser.add_argument("--use_labels", default=True)
+    parser.add_argument("--seed", default=0,type=int)
+    
     args = parser.parse_args()
+    print("SEED:",args.seed)
     filename = args.filename
     model_path = args.model
     max_new_tokens = args.max_new_tokens
@@ -366,6 +371,9 @@ if __name__ == "__main__":
     torch.cuda.set_device(accelerator.device)
     model = LlamaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, device_map='cuda', 
                                              torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2")
-    tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="right", use_fast=True)
+    if 'gsm8k' in model_path.lower():
+         tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="right", use_fast=False)
+    else:
+         tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="right", use_fast=True)
 
     main(accelerator,filename, model, tokenizer, max_new_tokens, max_new_seq_len, args.use_aug, args.use_labels, args.data_size)

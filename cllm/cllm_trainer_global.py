@@ -6,6 +6,8 @@ import wandb
 import random
 from torch.utils.data import DataLoader
 from tqdm.cli import tqdm
+from utils import set_casual
+# from utils import set_casual
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
 class CllmTrainer(Trainer):
@@ -24,7 +26,7 @@ class CllmTrainer(Trainer):
     def consistency_training_step(self, model, inputs):
 
         max_new_tokens = self.max_new_tokens      
-
+        causal = self.model.config.causal
         jacobian_trajectory = inputs["jacobian_trajectory"]
         input_masks = inputs["attention_mask"]
         bsz = jacobian_trajectory[0].shape[0]
@@ -50,7 +52,7 @@ class CllmTrainer(Trainer):
         if self.use_gt_labels:
             labels = inputs['labels_ids']
         else:
-            labels = inputs['complete_teacher_output_ids']
+            labels = inputs['teacher_output_ids']
         # TODO: check if it's right when batch size > 1
         if isinstance(labels,torch.Tensor):
             labels = labels.to(model.device)
@@ -64,8 +66,10 @@ class CllmTrainer(Trainer):
 
         attention_mask = torch.full_like(jacobian_trajectory[0], 1).to(model.device)
         attention_mask = jacobian_trajectory[-1] != self.tokenizer.pad_token_id
-
-        logits_last =  self.get_logits(model, jacobian_trajectory[-1].clone().detach(), attention_mask)
+        if not causal:
+            set_casual(model.model,True)
+        logits_last =  self.get_logits(model, jacobian_trajectory[-1].clone().detach(), attention_mask,
+                                       )
 
         label_smoother = LabelSmoother(epsilon=0.1, ignore_index= -100)
         loss_ar = label_smoother(label_student_model_output, labels, shift_labels=True)
@@ -79,17 +83,25 @@ class CllmTrainer(Trainer):
 
         ### compute Consistency loss (global) ###
         # random select one point from trajectory
-        i = random.choice(range(len(jacobian_trajectory))[:-1])
-
+        #i = random.choice(range(len(jacobian_trajectory))[:-1])
+        
+        i = torch.randint(low=0,high=len(jacobian_trajectory)-1,size=(bsz,))
+        # breakpoint()
+        input_ids = torch.stack([jacobian_trajectory[j][k] for k,j in enumerate(i)])
+        timesteps = i / max_new_tokens * 1000
         attention_mask = torch.full_like(jacobian_trajectory[0], 1).to(jacobian_trajectory[0].device)
-        attention_mask = jacobian_trajectory[i] != self.tokenizer.pad_token_id
+        attention_mask = input_ids != self.tokenizer.pad_token_id
+        if not causal:
+            set_casual(model.model,False)
+        logits_i = self.get_logits(model, input_ids.clone().detach(), attention_mask,
+                                    block_size=max_new_tokens,
+                                    timesteps=timesteps,
+        )
 
-        logits_i = self.get_logits(model, jacobian_trajectory[i].clone().detach(), attention_mask)
-
-        output_mask = jacobian_trajectory[i][..., 1:] == self.tokenizer.pad_token_id
+        output_mask = input_ids[..., 1:] == self.tokenizer.pad_token_id
         # We do not calculate the cross entrophy of same logits to alleviate misleading gradients
         for j in range(bsz):
-            end_of_mask_position = torch.where(jacobian_trajectory[i][j, 1:] != jacobian_trajectory[-1][j, 1:])[0]
+            end_of_mask_position = torch.where(input_ids[j, 1:] != jacobian_trajectory[-1][j, 1:])[0]
             if len(end_of_mask_position)==0:
                 output_mask[j, :] = True
             else:
@@ -154,10 +166,11 @@ class CllmTrainer(Trainer):
         mean_entropy = entropy.sum() / (~padding_mask).sum()
         return mean_entropy
 
-    def get_logits(self, model, input_ids, attention_mask):
+    def get_logits(self, model, input_ids, attention_mask,**kwargs):
         return model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            **kwargs
         ).logits
 
 

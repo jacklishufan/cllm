@@ -28,7 +28,7 @@ from torch.utils.data import Dataset
 import transformers
 from transformers.trainer_pt_utils import LabelSmoother, get_module_class_from_name
 import datasets
-
+from modeling import LLamaForMaskedDiffusion
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from typing import Dict
@@ -36,7 +36,7 @@ from typing import Dict
 from cllm_trainer_global import CllmTrainer
 
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
-
+from utils import set_casual
 import logging
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,8 @@ class ModelArguments:
         default="models/vicuna-7b-v1.5",  metadata={"help": "Path to target model"})
     qlora: Optional[bool] = field(default=False, metadata={"help": "Enable QLoRA processing"})
     dev: Optional[str] = None
+    causal: bool = True
+    use_temporal_embedding: bool = True
 @dataclass
 class DataArguments:
     data_path: str = field(
@@ -349,26 +351,32 @@ def train():
         model_args.target_model_path,
         cache_dir=training_args.cache_dir,
     )
+    config.causal = model_args.causal
+    config.use_temporal_embedding = model_args.use_temporal_embedding
     orig_ctx_len = getattr(config, "max_position_embeddings", None)
     if orig_ctx_len and training_args.model_max_length > orig_ctx_len:
         scaling_factor = float(
             math.ceil(training_args.model_max_length / orig_ctx_len))
         config.rope_scaling = {"type": "linear", "factor": scaling_factor}
     config.use_cache = False
-    
+    model_cls = LLamaForMaskedDiffusion
     if model_args.dev == 'test3':
         config.num_hidden_layers=2
-        model = transformers.AutoModelForCausalLM.from_config(
+        model = model_cls._from_config(
         config,
 
         )
     else:
         # Load model and tokenizer
-        model = transformers.AutoModelForCausalLM.from_pretrained(
+        model = model_cls.from_pretrained(
             model_args.target_model_path,
             config=config,
             cache_dir=training_args.cache_dir,
+            #attn_implementation="flash_attention_2"
         )
+    if not model_args.causal:
+        print("Set non-causal")
+        set_casual(model.model,False)
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.target_model_path,

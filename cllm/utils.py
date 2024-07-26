@@ -127,3 +127,7 @@ def jacobian_generated_data_postprocessed(generated_data, model_path):
 
 
     return cleaned_f_result
+
+def set_casual(model,value):
+    for layer in model.layers:
+        layer.self_attn.is_causal = value
