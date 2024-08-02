@@ -44,6 +44,7 @@ class LLamaForMaskedDiffusion(LlamaForCausalLM):
         timesteps: Optional[torch.tensor] = None,
         block_size: Optional[int] = None,
         is_last_block: Optional[int] = None,
+        temb_factor: Optional[float] = 1.0,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -76,7 +77,7 @@ class LLamaForMaskedDiffusion(LlamaForCausalLM):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         if self.config.use_temporal_embedding and inputs_embeds is None and timesteps is not None:
-            temb = self.temporal_embedding(timesteps)[:,None] # N X 1 X D
+            temb = self.temporal_embedding(timesteps)[:,None]  * temb_factor# N X 1 X D
             inputs_embeds = self.model.embed_tokens(input_ids)
             input_ids = None
             if block_size is None:
@@ -86,7 +87,7 @@ class LLamaForMaskedDiffusion(LlamaForCausalLM):
                 inputs_embeds = inputs_embeds +  is_last_block.unsqueeze(-1) * temb
                 inputs_embeds = torch.cat([inputs_embeds[:, :-block_size], inputs_embeds[:, -block_size:] + temb], dim=1)
             else:
-                inputs_embeds[:,-block_size] = inputs_embeds[:,-block_size] + temb
+                inputs_embeds[:,-block_size] = inputs_embeds[:,-block_size] + temb 
             # input_ids = None
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
