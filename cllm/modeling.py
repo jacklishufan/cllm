@@ -43,6 +43,7 @@ class LLamaForMaskedDiffusion(LlamaForCausalLM):
         return_dict: Optional[bool] = None,
         timesteps: Optional[torch.tensor] = None,
         block_size: Optional[int] = None,
+        is_last_block: Optional[int] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -81,6 +82,8 @@ class LLamaForMaskedDiffusion(LlamaForCausalLM):
             if block_size is None:
                 inputs_embeds = inputs_embeds +  temb
             elif self.training:
+                assert is_last_block is not None
+                inputs_embeds = inputs_embeds +  is_last_block.unsqueeze(-1) * temb
                 inputs_embeds = torch.cat([inputs_embeds[:, :-block_size], inputs_embeds[:, -block_size:] + temb], dim=1)
             else:
                 inputs_embeds[:,-block_size] = inputs_embeds[:,-block_size] + temb

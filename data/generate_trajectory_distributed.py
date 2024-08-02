@@ -317,6 +317,9 @@ def main(accelerator,filename, model, tokenizer, max_new_tokens, max_new_seq_len
                     # else:
                     #     continue
                     #for correct_id in random.choices(correct_positions, k=corrected_size[0]):
+                    k = min(len(correct_positions),8)
+                    if k == 0:
+                        continue
                     for correct_id in random.choices(correct_positions, k=8):
                         aug_trajectory = dic["answer_trajectory_ids"][j].copy()
                         aug_trajectory[correct_id] = dic["answer_trajectory_ids"][-1][correct_id]

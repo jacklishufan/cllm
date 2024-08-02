@@ -37,7 +37,7 @@ from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 import sys
-sys.path.append('/home/jacklishufan/Consistency_LLM/')
+sys.path.extend(['/home/jacklishufan/Consistency_LLM/','/home/bootstrap/jacklishufan/Consistency_LLM/'])
 from cllm.modeling import LLamaForMaskedDiffusion
 from math_normalization import *
 def delete_false_key_value(
@@ -162,9 +162,11 @@ def jacobi_forward_profiling(
             current_point = next_point
             torch.cuda.synchronize()
             t00 = time.time()
-            y = self(input_ids=current_point,past_key_values=past_key_values,use_cache=True,block_size=max_new_tokens,timesteps=timestep)
+            t = timestep / max_new_tokens * 1000
+            y = self(input_ids=current_point,past_key_values=past_key_values,use_cache=True,block_size=max_new_tokens,timesteps=t)
             # breakpoint()
             timestep += 1
+            
             output_ids = y.logits.argmax(-1) # self.lm_head(y.last_hidden_state).argmax(-1)
             next_point= torch.cat((current_point[0, 0].view(1,-1), output_ids[0, :seq_length-1].view(1,-1)), dim=-1)
             torch.cuda.synchronize()

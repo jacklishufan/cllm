@@ -5,7 +5,7 @@ def load_json(fp):
         data = json.loads(f.read())
     return data
 
-pattern = '/home/bootstrap/jacklishufan/Consistency_LLM/data/collected_jacobi_trajectory/cleaned_code_search_net_jacobi_max_new_tokens64_augTrue_labels_True_max_seq_len_1024_rank_*_0.json'
+pattern = '/home/bootstrap/jacklishufan/Consistency_LLM/data/collected_jacobi_trajectory/cleaned_v2_gsm8k_train_jacobi_max_new_tokens128_augTrue_labels_True_max_seq_len_1024_rank_*_0.json'
            
 files = glob.glob(pattern)
 print(files)
@@ -15,3 +15,6 @@ for fp in files:
 print(len(all_data))
 with open(pattern.replace('*','all'),'w') as f:
     f.write(json.dumps(all_data))
+    
+    
+   
