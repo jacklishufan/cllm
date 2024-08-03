@@ -53,7 +53,7 @@ class ModelArguments:
     qlora: Optional[bool] = field(default=False, metadata={"help": "Enable QLoRA processing"})
     dev: Optional[str] = None
     causal: bool = True
-    use_temporal_embedding: bool = True
+    use_temporal_embedding: bool = False
 @dataclass
 class DataArguments:
     data_path: str = field(
@@ -71,6 +71,9 @@ class TrainingArguments(transformers.TrainingArguments):
     ar_loss_weight: float = 10.0
     consistency_loss_weight: float = 1.0
     resume: bool = False
+    use_mask_diffusion: bool = False
+    mask_policy: str = 'mask'
+    use_full_seq: bool = False
     model_max_length: int = field(
         default=512,
         metadata={
@@ -190,6 +193,8 @@ class JacobianDataset(Dataset):
                          self.raw_data[i]["complete_teacher_output_ids"],
                          self.tokenizer,
                          self.model)
+        ret['prompt_ids_len'] =self.raw_data[i]['prompt_ids_len']
+        ret['jacobian_itr_id'] =int(self.raw_data[i]['jacobian_itr_id'].replace('itr_',''))
         self.cached_data_dict[i] = ret
 
         return ret
@@ -383,6 +388,9 @@ def train():
         padding_side="right",
         #use_fast=False,
     )
+    if tokenizer.unk_token is None:
+        tokenizer.add_special_tokens(dict(unk_token="<MASK>"))
+        model.resize_token_embeddings(len(tokenizer))
     if 'vicuna' in model_args.target_model_path:
         tokenizer.pad_token = tokenizer.unk_token
 

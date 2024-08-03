@@ -17,3 +17,6 @@ for fp in files:
 print(len(all_data))
 with open(pattern.replace('*','all'),'w') as f:
     f.write(json.dumps(all_data))
+    
+    
+   
