@@ -50,6 +50,9 @@ class CllmTrainer(Trainer):
         ### compute AutoRegression loss ###
         # use labels to avoid pattern collapse
         if self.use_gt_labels:
+            if len( inputs['labels_ids'].shape) == 3:
+                inputs['labels_ids'] =  inputs['labels_ids'].squeeze(1) # hack
+                
             labels = inputs['labels_ids']
         else:
             labels = inputs['teacher_output_ids']
@@ -62,6 +65,8 @@ class CllmTrainer(Trainer):
 
         labels_in = labels.clone()
         labels_in[labels==-100]=self.tokenizer.pad_token_id
+        # breakpoint()
+        
         label_student_model_output = model(labels_in, attention_mask)
 
         attention_mask = torch.full_like(jacobian_trajectory[0], 1).to(model.device)

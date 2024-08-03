@@ -1,14 +1,16 @@
 import glob
 import json
+import sys
 def load_json(fp):
     with open(fp) as f:
         data = json.loads(f.read())
     return data
 
-pattern = '/home/bootstrap/jacklishufan/Consistency_LLM/data/collected_jacobi_trajectory/cleaned_code_search_net_jacobi_max_new_tokens64_augTrue_labels_True_max_seq_len_1024_rank_*_0.json'
+pattern = sys.argv[1].replace('rank_0','rank_*')
            
 files = glob.glob(pattern)
 print(files)
+input("Continue?")
 all_data = []
 for fp in files:
     all_data.extend(load_json(fp))
