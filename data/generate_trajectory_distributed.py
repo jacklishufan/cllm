@@ -310,13 +310,14 @@ def main(accelerator,filename, model, tokenizer, max_new_tokens, max_new_seq_len
                 dic["answer_trajectory_ids"].append(id[0][-max_new_tokens:].tolist())
 
             if use_aug:
-                for j in range(len(dic["answer_trajectory_ids"])-3, 1, -1):
-                    correct_positions = torch.where(torch.tensor(dic["answer_trajectory_ids"][j])!= torch.tensor(dic["answer_trajectory_ids"][-1]))[0]
+                for j in range(len(dic["answer_trajectory_ids"])-3, -1, -1):
+                    correct_positions = torch.where(torch.tensor(dic["answer_trajectory_ids"][j]!=dic["answer_trajectory_ids"][-1]))[0]
                     # if correct_positions.shape[0] > 1:
                     #     corrected_size = random.sample(range(1, correct_positions.shape[0]), k=1)
                     # else:
                     #     continue
                     #for correct_id in random.choices(correct_positions, k=corrected_size[0]):
+                    # print(len(correct_positions))
                     for correct_id in random.choices(correct_positions, k=8):
                         aug_trajectory = dic["answer_trajectory_ids"][j].copy()
                         aug_trajectory[correct_id] = dic["answer_trajectory_ids"][-1][correct_id]
